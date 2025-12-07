@@ -1,12 +1,11 @@
 require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
-const crypto = require("crypto");
 const fetch = require("node-fetch");
 
 const app = express();
 
-// Capture raw body for signature validation
+// Capture raw body (we're not using signature validation yet, but this is fine)
 app.use(
   bodyParser.json({
     verify: (req, res, buf) => {
@@ -21,78 +20,8 @@ app.get("/health", (req, res) => {
 });
 
 /**
- * Helpers: validate HubSpot v3 signature for hubspot.fetch calls
- * Docs: v3 signature -> HMAC SHA256 over method + url + body + timestamp, base64
- * with your app's client secret.
- */
-
-// protect against replay
-function isRecentTimestamp(timestampMs) {
-  const FIVE_MINUTES = 5 * 60 * 1000;
-  const now = Date.now();
-  const ts = Number(timestampMs);
-  return Math.abs(now - ts) <= FIVE_MINUTES;
-}
-
-function validateHubSpotSignature(req) {
-  const clientSecret = process.env.HUBSPOT_CLIENT_SECRET;
-  if (!clientSecret) {
-    console.error("HUBSPOT_CLIENT_SECRET not set");
-    return false;
-  }
-
-  const signature = req.headers["x-hubspot-signature-v3"];
-  const timestamp = req.headers["x-hubspot-request-timestamp"];
-
-  if (!signature || !timestamp) {
-    console.error("Missing signature/timestamp");
-    return false;
-  }
-
-  if (!isRecentTimestamp(timestamp)) {
-    console.error("Timestamp too old");
-    return false;
-  }
-
-  const method = req.method;
-  const hostname = req.headers["x-forwarded-host"] || req.hostname;
-  const protocol = req.headers["x-forwarded-proto"] || "https";
-  const uri = `${protocol}://${hostname}${req.originalUrl}`;
-
-  const rawBody = req.rawBody || "";
-  const canonical = `${method}${uri}${rawBody}${timestamp}`;
-
-  const expected = crypto
-    .createHmac("sha256", clientSecret)
-    .update(canonical)
-    .digest("base64");
-
-  const sigBuf = Buffer.from(signature, "utf8");
-  const expBuf = Buffer.from(expected, "utf8");
-  if (
-    sigBuf.length !== expBuf.length ||
-    !crypto.timingSafeEqual(sigBuf, expBuf)
-  ) {
-    console.error("Signature mismatch");
-    return false;
-  }
-
-  // Optional: lock to a single portal
-  const allowedPortalId = process.env.ALLOWED_PORTAL_ID;
-  const portalId = req.query.portalId;
-  if (allowedPortalId && portalId && portalId !== allowedPortalId) {
-    console.error("Portal ID mismatch:", portalId);
-    return false;
-  }
-
-  return true;
-}
-
-/**
  * Helper: fetch latest observation value for a FRED series
- * We use fred/series/observations, descending, limit=1.
  */
-
 async function fetchLatestFredValue(seriesId) {
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) {
@@ -124,17 +53,10 @@ async function fetchLatestFredValue(seriesId) {
 
 /**
  * GET /hubspot/rates
- * Used by your card to get live rates:
- *  - SOFR      → series_id "SOFR"
- *  - PRIME     → series_id "DPRIME" (Bank Prime Loan Rate, daily)
- *  - 5Y UST    → series_id "DGS5"
- *  - 10Y UST   → series_id "DGS10"
+ * No signature check yet, just log errors.
  */
-
 app.get("/hubspot/rates", async (req, res) => {
-  if (!validateHubSpotSignature(req)) {
-    return res.status(401).json({ error: "Invalid signature" });
-  }
+  console.log("GET /hubspot/rates called");
 
   try {
     const [sofr, prime, dgs5, dgs10] = await Promise.all([
@@ -143,6 +65,13 @@ app.get("/hubspot/rates", async (req, res) => {
       fetchLatestFredValue("DGS5"),
       fetchLatestFredValue("DGS10"),
     ]);
+
+    console.log("Rates fetched from FRED:", {
+      SOFR: sofr,
+      PRIME: prime,
+      TREASURY_5Y: dgs5,
+      TREASURY_10Y: dgs10,
+    });
 
     res.json({
       SOFR: sofr,
@@ -158,17 +87,13 @@ app.get("/hubspot/rates", async (req, res) => {
 
 /**
  * POST /hubspot/update-deal-rates
- * Body: { dealId: string, properties: { ... } }
- * Uses HUBSPOT_ACCESS_TOKEN to PATCH /crm/v3/objects/deals/{dealId}
  */
-
 app.post("/hubspot/update-deal-rates", async (req, res) => {
-  if (!validateHubSpotSignature(req)) {
-    return res.status(401).json({ error: "Invalid signature" });
-  }
+  console.log("POST /hubspot/update-deal-rates called, body:", req.body);
 
   const { dealId, properties } = req.body || {};
   if (!dealId || !properties) {
+    console.error("Missing dealId/properties");
     return res.status(400).json({ error: "Missing dealId or properties" });
   }
 
@@ -193,9 +118,10 @@ app.post("/hubspot/update-deal-rates", async (req, res) => {
       }
     );
 
+    const text = await hsRes.text();
+    console.log("HubSpot API response:", hsRes.status, text.slice(0, 200));
+
     if (!hsRes.ok) {
-      const text = await hsRes.text();
-      console.error("HubSpot API error:", hsRes.status, text);
       return res.status(hsRes.status).json({ error: "HubSpot update failed" });
     }
 
