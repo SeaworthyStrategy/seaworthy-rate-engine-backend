@@ -7,6 +7,9 @@ const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const app = express();
+// Temporary in-memory store for collateral checklist state.
+// Shape: { [dealId]: { collateralType, itemStatuses, overallStatus, isSaved } }
+const checklistStore = {};
 
 // Capture raw body (we're not using signature validation yet, but this is fine)
 app.use(
@@ -20,6 +23,90 @@ app.use(
 // Simple healthcheck
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
+});
+
+// Collateral Checklist Get Route
+app.get("/hubspot/collateral-checklist", async (req, res) => {
+  const dealId = req.query.dealId;
+  if (!dealId) {
+    return res.status(400).json({ error: "Missing dealId" });
+  }
+
+  // Collateral Checklist POST route
+  app.post("/hubspot/collateral-checklist", async (req, res) => {
+    const { dealId, collateralType, itemStatuses, overallStatus } =
+      req.body || {};
+
+    if (!dealId) {
+      return res.status(400).json({ error: "Missing dealId" });
+    }
+
+    // 1) Store checklist state in memory (for demo; DB later)
+    checklistStore[dealId] = {
+      collateralType: collateralType || null,
+      itemStatuses: itemStatuses || {},
+      overallStatus: overallStatus || "Complete",
+      isSaved: true,
+    };
+
+    // 2) Update HubSpot Deal properties
+    try {
+      const token = process.env.HUBSPOT_ACCESS_TOKEN;
+      if (!token) {
+        console.error("HUBSPOT_ACCESS_TOKEN not set");
+        return res.status(500).json({ error: "Server not configured" });
+      }
+
+      const properties = {
+        // Overall dropdown (enum): Complete / Waiting on Customer / Waiting on Us / Not Needed
+        deal_collateral_dropdown: overallStatus || "Complete",
+        // Boolean flag for convenience
+        collateral_checklist_complete: true,
+        // If you created this property, uncomment:
+        // collateral_checklist_last_updated: new Date().toISOString(),
+      };
+
+      const hsRes = await fetch(
+        `https://api.hubapi.com/crm/v3/objects/deals/${encodeURIComponent(
+          dealId
+        )}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ properties }),
+        }
+      );
+
+      const text = await hsRes.text();
+      console.log(
+        "HubSpot collateral dropdown update:",
+        hsRes.status,
+        text.slice(0, 200)
+      );
+
+      if (!hsRes.ok) {
+        return res
+          .status(hsRes.status)
+          .json({ error: "HubSpot update failed", details: text });
+      }
+
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("Error updating HubSpot collateral dropdown:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+
+  const entry = checklistStore[dealId];
+  if (!entry) {
+    // No saved state yet
+    return res.json({});
+  }
+
+  return res.json(entry);
 });
 
 /**
