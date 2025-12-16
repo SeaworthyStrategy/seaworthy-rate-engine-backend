@@ -81,13 +81,16 @@ app.post("/hubspot/collateral-checklist", async (req, res) => {
       return res.status(500).json({ error: "Server not configured" });
     }
 
+    const stateJson = JSON.stringify({
+      collateralType: collateralType || null,
+      itemStatuses: itemStatuses || {},
+    });
+
     const properties = {
-      // Enumeration property: Complete / Waiting on Customer / Waiting on Us / Not Needed
       deal_collateral_dropdown: overallStatus || "Complete",
-      // Boolean flag
       collateral_checklist_complete: true,
-      // If you created this property, uncomment:
       // collateral_checklist_last_updated: new Date().toISOString(),
+      collateral_checklist_state_json: stateJson,
     };
 
     const hsRes = await fetch(
