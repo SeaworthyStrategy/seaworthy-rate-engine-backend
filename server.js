@@ -49,6 +49,7 @@ app.get("/hubspot/collateral-checklist", async (req, res) => {
 
   const entry = checklistStore[dealId];
   if (!entry) {
+    // No saved state yet
     return res.json({});
   }
 
@@ -57,8 +58,6 @@ app.get("/hubspot/collateral-checklist", async (req, res) => {
 
 // POST save state + update HubSpot Deal properties
 app.post("/hubspot/collateral-checklist", async (req, res) => {
-  console.log("POST /hubspot/collateral-checklist body:", req.body);
-
   const { dealId, collateralType, itemStatuses, overallStatus } =
     req.body || {};
 
@@ -66,14 +65,11 @@ app.post("/hubspot/collateral-checklist", async (req, res) => {
     return res.status(400).json({ error: "Missing dealId" });
   }
 
-  const normalizedOverallStatus = overallStatus || "Complete";
-  const isComplete = normalizedOverallStatus === "Complete";
-
-  // 1) Store checklist state in memory (demo; DB later)
+  // 1) Store checklist state in memory (for demo; DB later)
   checklistStore[dealId] = {
     collateralType: collateralType || null,
     itemStatuses: itemStatuses || {},
-    overallStatus: normalizedOverallStatus,
+    overallStatus: overallStatus || "Complete",
     isSaved: true,
   };
 
@@ -86,13 +82,11 @@ app.post("/hubspot/collateral-checklist", async (req, res) => {
     }
 
     const properties = {
-      // Overall dropdown (enum): Complete / Waiting on Customer / Waiting on Us / Not Needed
-      deal_collateral_dropdown: normalizedOverallStatus,
-
-      // Boolean flag (make it true only when Complete)
-      collateral_checklist_complete: isComplete,
-
-      // Optional if you created this property:
+      // Enumeration property: Complete / Waiting on Customer / Waiting on Us / Not Needed
+      deal_collateral_dropdown: overallStatus || "Complete",
+      // Boolean flag
+      collateral_checklist_complete: true,
+      // If you created this property, uncomment:
       // collateral_checklist_last_updated: new Date().toISOString(),
     };
 
@@ -111,7 +105,11 @@ app.post("/hubspot/collateral-checklist", async (req, res) => {
     );
 
     const text = await hsRes.text();
-    console.log("HubSpot collateral update:", hsRes.status, text.slice(0, 400));
+    console.log(
+      "HubSpot collateral dropdown update:",
+      hsRes.status,
+      text.slice(0, 200)
+    );
 
     if (!hsRes.ok) {
       return res
@@ -119,7 +117,7 @@ app.post("/hubspot/collateral-checklist", async (req, res) => {
         .json({ error: "HubSpot update failed", details: text });
     }
 
-    return res.json({ success: true, saved: checklistStore[dealId] });
+    return res.json({ success: true });
   } catch (err) {
     console.error("Error updating HubSpot collateral dropdown:", err);
     return res.status(500).json({ error: "Server error" });
